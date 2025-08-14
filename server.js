@@ -4,52 +4,69 @@ const { Server } = require("socket.io");
 
 const app = express();
 const server = http.createServer(app);
+
 const io = new Server(server, {
-    cors: {
-        origin: "*", // Allow all origins for testing
-        methods: ["GET", "POST"]
-    }
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
 });
 
-let waitingUsers = [];
+app.get("/", (req, res) => {
+  res.send("ChatConnect signaling server running");
+});
+
+// Store connected users
+let users = [];
 
 io.on("connection", (socket) => {
-    console.log("New user connected:", socket.id);
+  console.log("User connected:", socket.id);
+  users.push(socket.id);
 
-    socket.on("findPartner", () => {
-        if (waitingUsers.length > 0) {
-            const partnerSocket = waitingUsers.pop();
-            socket.partnerId = partnerSocket.id;
-            partnerSocket.partnerId = socket.id;
+  // Send the total online count
+  io.emit("onlineUsers", users.length);
 
-            socket.emit("partnerFound", { partnerId: partnerSocket.id });
-            partnerSocket.emit("partnerFound", { partnerId: socket.id });
-        } else {
-            waitingUsers.push(socket);
-            socket.emit("waiting");
-        }
+  // Relay signaling messages
+  socket.on("offer", (data) => {
+    socket.to(data.target).emit("offer", {
+      sdp: data.sdp,
+      caller: socket.id
     });
+  });
 
-    socket.on("signal", (data) => {
-        const partnerId = socket.partnerId;
-        if (partnerId) {
-            io.to(partnerId).emit("signal", {
-                from: socket.id,
-                signal: data.signal
-            });
-        }
+  socket.on("answer", (data) => {
+    socket.to(data.target).emit("answer", {
+      sdp: data.sdp
     });
+  });
 
-    socket.on("disconnect", () => {
-        console.log("User disconnected:", socket.id);
-        waitingUsers = waitingUsers.filter((s) => s.id !== socket.id);
-
-        if (socket.partnerId) {
-            io.to(socket.partnerId).emit("partnerDisconnected");
-        }
+  socket.on("ice-candidate", (data) => {
+    socket.to(data.target).emit("ice-candidate", {
+      candidate: data.candidate
     });
+  });
+
+  // Random partner request
+  socket.on("findPartner", () => {
+    const availableUsers = users.filter(id => id !== socket.id);
+    if (availableUsers.length > 0) {
+      const partner = availableUsers[Math.floor(Math.random() * availableUsers.length)];
+      socket.emit("partnerFound", partner);
+      socket.to(partner).emit("partnerFound", socket.id);
+    } else {
+      socket.emit("noPartner");
+    }
+  });
+
+  // Disconnect
+  socket.on("disconnect", () => {
+    console.log("User disconnected:", socket.id);
+    users = users.filter(id => id !== socket.id);
+    io.emit("onlineUsers", users.length);
+  });
 });
 
-server.listen(process.env.PORT || 3000, () => {
-    console.log("Server running on port 3000");
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
